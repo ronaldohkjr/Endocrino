@@ -227,3 +227,10 @@ function conversar_(body) {
     lock.releaseLock();
   }
 }
+
+/* Teste: selecione "testarIA" no editor e clique em Executar.
+   Autoriza o acesso externo e confere se a chave da API funciona. */
+function testarIA() {
+  const j = claude_([{ role: 'user', content: 'Responda só: assistente funcionando.' }]);
+  Logger.log(j.content.filter(b => b.type === 'text').map(b => b.text).join(' '));
+}
