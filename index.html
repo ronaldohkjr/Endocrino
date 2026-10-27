@@ -277,12 +277,14 @@ async function enviar(texto){
   texto=String(texto||"").trim();if(!texto||pendente)return;
   pendente=texto;ocupado=true;$("#enviar").disabled=true;$("#texto").value="";renderChat();
   try{
-    const j=await api("POST",{action:"chat",texto,autor:st.get("autor")});
+    const j=await api("POST",{action:"chat",texto,autor:st.get("autor")});aviso("");
     if(j.registrados)toast(j.registrados===1?"1 contato anotado":j.registrados+" contatos anotados");
   }catch(e){
     if(e.code==="sem_chave")toast("Falta configurar a chave da IA no script");
     else if(e.code==="pin")toast("Código incorreto");
-    else{toast("O assistente não respondeu. Tente de novo.");if(!chat.some(m=>m.texto===texto))$("#texto").value=texto}
+    else{
+      const det=e.code==="acao"?"O script ainda está na versão antiga: falta implantar a nova versão.":e.code==="ia"?"Erro da IA: "+(e.detalhe||"sem detalhe"):e.message==="Failed to fetch"?"Sem conexão com o script.":"Erro: "+(e.code||e.message);
+      aviso("O assistente não respondeu. "+det);if(!chat.some(m=>m.texto===texto))$("#texto").value=texto}
   }finally{pendente=null;ocupado=false;$("#enviar").disabled=false;render()}
 }
 $("#send").addEventListener("submit",e=>{e.preventDefault();enviar($("#texto").value)});
