@@ -68,6 +68,21 @@ textarea{min-height:64px;resize:vertical}
 .toast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(18px + env(safe-area-inset-bottom,0px));background:var(--ink);color:var(--bg);padding:8px 16px;border-radius:8px;font-size:.9rem}
 footer{font-size:.82rem;color:var(--muted)}
 footer a{color:var(--accent)}
+.chat{background:var(--surface);border:1px solid var(--line);border-radius:10px;display:grid;grid-template-rows:auto minmax(0,1fr) auto}
+.chat-head{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:12px 16px;border-bottom:1px solid var(--line)}
+.chat-head h2{font-size:1.1rem}
+.chat-head p{margin:0;font-size:.85rem;color:var(--muted)}
+.msgs{display:flex;flex-direction:column;gap:8px;padding:14px 16px;max-height:min(52vh,460px);overflow-y:auto;overscroll-behavior:contain}
+.msg{max-width:min(85%,560px);padding:8px 12px;border-radius:12px;font-size:.95rem;white-space:pre-wrap;overflow-wrap:anywhere}
+.msg.user{align-self:flex-end;background:var(--accent-soft);border-bottom-right-radius:4px}
+.msg.bot{align-self:flex-start;background:var(--bg);border:1px solid var(--line);border-bottom-left-radius:4px}
+.msg .by{display:block;font-size:.75rem;font-weight:600;color:var(--muted);margin-bottom:2px}
+.msg.pend{opacity:.7;font-style:italic}
+.msgs .vazio{color:var(--muted);font-size:.92rem;margin:0}
+.sugs{display:flex;flex-wrap:wrap;gap:6px}
+.sugs button{font-weight:400;font-size:.85rem;padding:5px 10px;border-radius:99px;background:var(--bg)}
+form.send{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;padding:12px 16px;border-top:1px solid var(--line)}
+form.send textarea{min-height:44px;max-height:140px}
 [hidden]{display:none!important}
 @media (max-width:520px){.doc-top{grid-template-columns:minmax(0,1fr)}.hist li{grid-template-columns:minmax(0,1fr);gap:0}}
 </style>
@@ -94,6 +109,17 @@ footer a{color:var(--accent)}
     <span class="sync" id="sync"></span>
   </div>
   <p class="note" id="dica" hidden>Ao ligar, informe o nome do plano e confirme se <strong>aquele endereço</strong> atende Unimed: algumas médicas têm mais de um consultório.</p>
+
+  <section class="chat" id="chat" aria-label="Assistente" hidden>
+    <div class="chat-head">
+      <div><h2>Assistente</h2><p>Conte como foi cada ligação. Ele anota na planilha e sugere o próximo passo.</p></div>
+    </div>
+    <div class="msgs" id="msgs" aria-live="polite"></div>
+    <form class="send" id="send">
+      <textarea id="texto" rows="1" maxlength="2000" placeholder="Ex.: Liguei na Marilisa, só tem horário em 3/12 às 15h, marquei" aria-label="Mensagem para o assistente"></textarea>
+      <button class="primary" type="submit" id="enviar">Enviar</button>
+    </form>
+  </section>
 
   <section class="list" id="list" aria-label="Médicas" hidden></section>
 
@@ -128,7 +154,7 @@ const RESULTADOS={
 };
 const CANAIS=["Telefone","WhatsApp","Site/app","Presencial"];
 
-let contatos=[], aberto=null, ocupado=false, ultima=null;
+let contatos=[], chat=[], aberto=null, ocupado=false, ultima=null, pendente=null;
 const st={get(k){try{return localStorage.getItem(k)||""}catch(e){return""}},set(k,v){try{v?localStorage.setItem(k,v):localStorage.removeItem(k)}catch(e){}}};
 const $=s=>document.querySelector(s);
 function hoje(){const d=new Date();d.setMinutes(d.getMinutes()-d.getTimezoneOffset());return d.toISOString().slice(0,10)}
@@ -146,8 +172,8 @@ async function api(method,body){
     ? await fetch(SCRIPT_URL+"?pin="+encodeURIComponent(pin)+"&t="+Date.now())
     : await fetch(SCRIPT_URL,{method:"POST",headers:{"Content-Type":"text/plain;charset=utf-8"},body:JSON.stringify(Object.assign({pin},body))});
   const j=await r.json();
-  if(!j.ok){const e=new Error(j.erro||"erro");e.code=j.erro;throw e}
-  contatos=j.contatos||[];ultima=new Date();
+  if(j.contatos)contatos=j.contatos;if(j.chat)chat=j.chat;ultima=new Date();
+  if(!j.ok){const e=new Error(j.erro||"erro");e.code=j.erro;e.detalhe=j.detalhe;throw e}
   return j;
 }
 
@@ -160,9 +186,10 @@ async function carregar(silencioso){
   }
 }
 
-function mostrar(logado){$("#gate").hidden=logado;["#bar","#dica","#list"].forEach(s=>$(s).hidden=!logado)}
+function mostrar(logado){$("#gate").hidden=logado;["#bar","#dica","#chat","#list"].forEach(s=>$(s).hidden=!logado)}
 
 function render(){
+  renderChat();
   const cont={idle:0};for(const k in RESULTADOS)cont[k]=0;
   MEDICAS.forEach(m=>{const s=status(m.id);cont[RESULTADOS[s]?s:"idle"]++});
   const t=$("#tally");t.replaceChildren(el("span",{class:"chip s-idle"},el("b",{},String(cont.idle))," sem contato"));
@@ -229,6 +256,38 @@ $("#sair").addEventListener("click",()=>{st.set("pin","");contatos=[];mostrar(fa
 if(!SCRIPT_URL){aviso("Página ainda sem conexão com a planilha. Falta configurar o endereço do Google Apps Script.")}
 else if(st.get("pin")){carregar()}
 else{$("#autor").value=st.get("autor");mostrar(false)}
+const SUGESTOES=["O que eu faço agora?","Liguei na Caroline e não atendeu","Quem ainda falta ligar?"];
+let chatAssin="";
+function renderChat(){
+  const box=$("#msgs");
+  const lista=chat.slice();if(pendente)lista.push({papel:"user",autor:st.get("autor"),texto:pendente,pend:true});
+  const assin=lista.length+"|"+(lista.length?lista[lista.length-1].criadoEm+lista[lista.length-1].texto.length:"")+"|"+(pendente?1:0);
+  if(assin===chatAssin)return;chatAssin=assin;
+  const perto=box.scrollHeight-box.scrollTop-box.clientHeight<80;
+  box.replaceChildren();
+  if(!lista.length){box.append(el("p",{class:"vazio"},"Ainda sem conversa. Experimente:"),el("div",{class:"sugs"},SUGESTOES.map(t=>el("button",{type:"button",onclick:()=>enviar(t)},t))))}
+  for(const m of lista){
+    const bot=m.papel==="assistant";
+    box.append(el("div",{class:"msg "+(bot?"bot":"user")},el("span",{class:"by"},bot?"Assistente":(m.autor||"")),m.texto));
+  }
+  if(pendente)box.append(el("div",{class:"msg bot pend"},"Pensando e anotando…"));
+  if(perto||pendente)box.scrollTop=box.scrollHeight;
+}
+async function enviar(texto){
+  texto=String(texto||"").trim();if(!texto||pendente)return;
+  pendente=texto;ocupado=true;$("#enviar").disabled=true;$("#texto").value="";renderChat();
+  try{
+    const j=await api("POST",{action:"chat",texto,autor:st.get("autor")});
+    if(j.registrados)toast(j.registrados===1?"1 contato anotado":j.registrados+" contatos anotados");
+  }catch(e){
+    if(e.code==="sem_chave")toast("Falta configurar a chave da IA no script");
+    else if(e.code==="pin")toast("Código incorreto");
+    else{toast("O assistente não respondeu. Tente de novo.");if(!chat.some(m=>m.texto===texto))$("#texto").value=texto}
+  }finally{pendente=null;ocupado=false;$("#enviar").disabled=false;render()}
+}
+$("#send").addEventListener("submit",e=>{e.preventDefault();enviar($("#texto").value)});
+$("#texto").addEventListener("keydown",e=>{if(e.key==="Enter"&&!e.shiftKey&&!e.isComposing&&window.matchMedia("(hover:hover)").matches){e.preventDefault();enviar($("#texto").value)}});
+
 setInterval(()=>{if(SCRIPT_URL&&st.get("pin")&&!document.hidden&&!aberto)carregar(true)},60000);
 document.addEventListener("visibilitychange",()=>{if(!document.hidden&&SCRIPT_URL&&st.get("pin"))carregar(true)});
 </script>
